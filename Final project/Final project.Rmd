@@ -1,0 +1,300 @@
+---
+title: "Socialisme i start 1870'erne"
+author: "Frederik Hintze og Morten Lindegaard"
+date: "19/12/2023"
+output: html_document
+---
+  
+library(tidyverse)
+library(lubridate)
+library(ggwordcloud)
+library(tidytext)
+
+# socialisme ord med "aktuelt" fra 70-75, som vi refererer til som socialisme_aktuelt:
+socialisme_aktuelt <- read.csv("https://labs.statsbiblioteket.dk/labsapi/api/aviser/export/fields?query=socialis%2A%20iso_date%3A%5B1870-01-01%20TO%201875-12-24%5D%20familyId%3AAktuelt&fields=link&fields=recordID&fields=timestamp&fields=pwa&fields=cer&fields=fulltext_org&fields=pageUUID&fields=editionUUID&fields=titleUUID&fields=editionId&fields=familyId&fields=newspaper_page&fields=newspaper_edition&fields=lplace&fields=location_name&fields=location_coordinates&max=-1&structure=header&structure=content&format=CSV")
+
+# socialisme ord uden "aktuelt" fra 70-75, som vi refererer til som socialisme_other. 
+socialisme_other <- read.csv("https://labs.statsbiblioteket.dk/labsapi/api/aviser/export/fields?query=socialis%2A%20iso_date%3A%5B1870-01-01%20TO%201875-12-24%5D%20NOT%20familyId%3Aaktuelt&fields=link&fields=recordID&fields=timestamp&fields=pwa&fields=cer&fields=fulltext_org&fields=pageUUID&fields=editionUUID&fields=titleUUID&fields=editionId&fields=familyId&fields=newspaper_page&fields=newspaper_edition&fields=lplace&fields=location_name&fields=location_coordinates&max=-1&structure=header&structure=content&format=CSV")
+
+
+# nu muterer vi så måneder kommer med for socialisme_aktuelt og derefter for socialisme_other
+socialisme_aktuelt %>%
+  mutate(timestamp = ymd_hms(timestamp)) %>% 
+  mutate(year_month = format_ISO8601(timestamp, presicion = "ym")) -> socialisme_aktuelt1
+
+socialisme_other %>%
+  mutate(timestamp = ymd_hms(timestamp)) %>% 
+  mutate(year_month = format_ISO8601(timestamp, presicion = "ym")) -> socialisme_other1
+
+
+## Her vises den generelle trend for udviklingen af socialist-relateret ord. først for socialisme_aktuelt og derefter for socialisme_other med alle de andre aviser:
+socialisme_aktuelt1 %>%
+  mutate(aar_maaned = str_extract(year_month, "^\\d{4}-\\d{2}")) %>% 
+  count(aar_maaned) %>%
+  ggplot(aes(x = aar_maaned, y = n)) +
+  geom_line(group = 1, color = "red", linetype = "solid", size = 1) +
+  labs(x = "year and month", y = "Number of words related to socialism", title = "Figure 1. Number of words related to socialism over time from the socialist newspaper") +
+  scale_color_manual(values = c("red")) +
+  scale_linetype_manual(values = "solid") +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90))
+
+socialisme_other1 %>%
+  mutate(aar_maaned = str_extract(year_month, "^\\d{4}-\\d{2}")) %>% 
+  count(aar_maaned) %>%
+  ggplot(aes(x = aar_maaned, y = n)) +
+  geom_line(group = 1, color = "blue", linetype = "solid", size = 1) +
+  labs(x = "year and month", y = "Number of words related to socialism", title = "Figure 2. Number of words related to socialism over time from all the other newspaper") +
+  scale_color_manual(values = c("blue")) +
+  scale_linetype_manual(values = "solid") +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90))
+
+
+# Her prøver vi at vise ord som er forbundet med socialisme for socialisme_other. Denne kode opdeler ordene i par.  
+
+socialisme_other1 %>% 
+  unnest_tokens(bigram, fulltext_org, token = "ngrams", n = 2) -> socialisme_bigrams
+
+# Derefter laver vi følgende komando til at undersøge vores bigram
+
+socialisme_bigrams %>% 
+  select(bigram)
+
+# Her optæller vi vores bigrams 
+
+socialisme_bigrams %>% 
+  count(bigram, sort = TRUE)
+
+# VI indlæser en stopordsliste for at fjerne irrelevante ord
+
+stopord <- read_csv("https://gist.githubusercontent.com/maxodsbjerg/4d1e3b1081ebba53a8d2c3aae2a1a070/raw/e1f63b4c81c15bb58a54a2f94673c97d75fe6a74/stopord_18.csv")
+
+# Her deler vi bigrams op i to ord: word1 og word2
+
+socialisme_bigrams %>% 
+  separate(bigram, c("word1", "word2"), sep = " ") ->socialisme_bigrams_separated
+
+
+# Derefter kan vi filtrere stopordene ud i begge kolonner, hvilket vi gemmer til en ny dataframe
+
+socialisme_bigrams_separated %>% 
+  filter(!word1 %in% stopord$word) %>%
+  filter(!word2 %in% stopord$word) -> socialisme_bigrams_filtered
+
+#Dernæst kan vi optælle vores bigrams uden stopord
+
+socialisme_bigrams_filtered %>% 
+  count(word1, word2, sort = TRUE)
+
+
+# Ud fra overstående optælling kan vi se forskellige ordforbindelser til socialisme. Vi er interesseret i se hvilke ord som bliver anvendt både før og efter socialisme relaterede ord. Vi starter med at undersøge hvilke ord som kommer før socialisme relatede ord. Dette gør vi ved at 
+# Tricket her er funktionen `str_detect`, som får at vide at den leder ord der starter med "strik" og kan efterfølges af 0 eller flere bogstaver mellem a til z og æ og ø. "\\b" angiver at det efterfølgende s skal være starten af ordet.
+
+socialisme_bigrams_filtered %>% 
+  filter(str_detect(word2, "\\bsocialis[a-zæø]*")) %>% 
+  count(word1, word2, sort = TRUE)
+
+#Allerførst gemmer vi den ovenstående optælling til en ny data frame, så vi kan arbejde videre med den
+
+socialisme_bigrams_filtered %>% 
+  filter(str_detect(word2, "\\bsocialis[a-zæø]*")) %>% 
+  count(word1, word2, sort = TRUE) -> socialisme_bigrams_counts
+
+
+#Herefter bruger vi biblioteket "igraph" til at lave vores dataframe om til et netværksgraf-element. Inden da specificerer vi, at vi kun er interesserede i bigrams, der optræder mere en 15 gange
+
+library(igraph)
+
+bigram_graph <- socialisme_bigrams_counts %>%
+  filter(n > 15) %>%
+  graph_from_data_frame()
+
+# Tilsidst bruger vi pakken "ggraph" til at visualisere netværket:
+
+library(ggraph)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "#f7a1bd", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  labs(title = "Figur 5. Bigram illustration from all other newspapers, words before socialist related words") +
+  theme_void()+
+  theme(legend.position = "right")
+
+# Herved for vi altså på en overskuelig måde visualiseret de forskellige ords forhold. 
+# For at gemme grafen bruger vi funktionen `ggsave`, hvor man angiver filnavn og type efterfulgt af bredde og højde og hvilken enhed, samt baggrundsfarven.
+
+ggsave("graphics/bigram_graph.png", width = 28, height = 20, units = "cm", bg = "white")
+
+
+###### Vi gør nu samme ting som overstående, men nu med word 1 - (de ord som kommer efter) #####
+
+
+socialisme_bigrams_filtered %>% 
+  filter(str_detect(word1, "\\bsocialis[a-zæø]*")) %>% 
+  count(word1, word2, sort = TRUE)
+
+#Allerførst gemmer vi den ovenstående optælling til en ny data frame, så vi kan arbejde videre med den
+
+socialisme_bigrams_filtered %>% 
+  filter(str_detect(word1, "\\bsocialis[a-zæø]*")) %>% 
+  count(word1, word2, sort = TRUE) -> socialisme1_bigrams_counts1
+
+
+#Herefter bruger vi biblioteket "igraph" til at lave vores dataframe om til et netværksgraf-element. Inden da specificerer vi, at vi kun er interesserede i bigrams, der optræder mere en 8 gange
+
+library(igraph)
+library(igraph)
+
+bigram_graph1 <- socialisme1_bigrams_counts1 %>%
+  filter(n > 20) %>%
+  graph_from_data_frame()
+
+# Tilsidst bruger vi pakken "ggraph" til at visualisere netværket:
+
+library(ggraph)
+library(ggraph)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_graph1, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "#f7a1bd", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  labs(title = "Figur 6. Bigram illustration from all other newspapers, words after socialist related words") +
+  theme_void()+
+  theme(legend.position = "right")
+
+# Herved for vi altså på en overskuelig måde visualiseret de forskellige ords forhold. 
+# For at gemme grafen bruger vi funktionen `ggsave`, hvor man angiver filnavn og type efterfulgt af bredde og højde og hvilken enhed, samt baggrundsfarven.
+
+ggsave("graphics/bigram_graph1.png", width = 28, height = 20, units = "cm", bg = "white")
+
+
+#### Nu gør vi os i samme procedure, men nu med socialisme_aktuelt istedet for socialisme_other. ####
+
+socialisme_aktuelt1 %>% 
+  unnest_tokens(bigram, fulltext_org, token = "ngrams", n = 2) -> socialisme_bigrams_aktuelt
+
+# Derefter laver vi følgende komando til at undersøge bigram
+
+socialisme_bigrams_aktuelt %>% 
+  select(bigram)
+
+# Optæller bigrams
+
+socialisme_bigrams_aktuelts %>% 
+  count(bigram, sort = TRUE)
+
+# indlæser stopordsliste
+
+stopord <- read_csv("https://gist.githubusercontent.com/maxodsbjerg/4d1e3b1081ebba53a8d2c3aae2a1a070/raw/e1f63b4c81c15bb58a54a2f94673c97d75fe6a74/stopord_18.csv")
+
+# dele bigrams op i to ord: word1 og word2
+
+socialisme_bigrams_aktuelt %>% 
+  separate(bigram, c("word1", "word2"), sep = " ") ->socialisme_bigrams_separated_aktuelt
+
+
+# Derefter kan vi filtrere stopordene ud i begge kolonner, hvilket vi gemmer til en ny dataframe
+
+socialisme_bigrams_separated_aktuelt %>% 
+  filter(!word1 %in% stopord$word) %>%
+  filter(!word2 %in% stopord$word) -> socialisme_bigrams_filtered_aktuelt
+
+#Dernæst kan vi optælle vores bigrams uden stopord
+
+socialisme_bigrams_filtered_aktuelt %>% 
+  count(word1, word2, sort = TRUE)
+
+
+# Ud fra overstående optælling kan vi se forskellige ordforbindelser til socialisme. Vi er interesseret i se hvilke ord som bliver anvendt både før og efter socialisme relaterede ord. Vi starter med at undersøge hvilke ord som kommer før socialisme relatede ord. Dette gør vi ved at 
+# Tricket her er funktionen `str_detect`, som får at vide at den leder ord der starter med "strik" og kan efterfølges af 0 eller flere bogstaver mellem a til z og æ og ø. "\\b" angiver at det efterfølgende s skal være starten af ordet.
+
+socialisme_bigrams_filtered_aktuelt %>% 
+  filter(str_detect(word2, "\\bsocialis[a-zæø]*")) %>% 
+  count(word1, word2, sort = TRUE)
+
+#Allerførst gemmer vi den ovenstående optælling til en ny data frame, så vi kan arbejde videre med den
+
+socialisme_bigrams_filtered_aktuelt %>% 
+  filter(str_detect(word2, "\\bsocialis[a-zæø]*")) %>% 
+  count(word1, word2, sort = TRUE) -> socialisme_bigrams_counts_aktuelt
+
+
+#Herefter bruger vi biblioteket "igraph" til at lave vores dataframe om til et netværksgraf-element. Inden da specificerer vi, at vi kun er interesserede i bigrams, der optræder mere en 8 gange
+
+library(igraph)
+
+bigram_graph_aktuelt <- socialisme_bigrams_counts_aktuelt %>%
+  filter(n > 5) %>%
+  graph_from_data_frame()
+
+# Tilsidst bruger vi pakken "ggraph" til at visualisere netværket:
+
+library(ggraph) 
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_graph_aktuelt, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "#f7a1bd", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  labs(title = "Figur 3. Bigram illustration from socialisten, words before socialist related words") +
+  theme_void()+
+  theme(legend.position = "right")
+
+# Herved for vi altså på en overskuelig måde visualiseret de forskellige ords forhold. 
+# For at gemme grafen bruger vi funktionen `ggsave`, hvor man angiver filnavn og type efterfulgt af bredde og højde og hvilken enhed, samt baggrundsfarven.
+
+ggsave("graphics/bigram_graph_aktuelt.png", width = 28, height = 20, units = "cm", bg = "white")
+
+
+###### Samme ting, men nu med word 1 - (de ord som kommer efter) #####
+
+
+socialisme_bigrams_filtered_aktuelt %>% 
+  filter(str_detect(word1, "\\bsocialis[a-zæø]*")) %>% 
+  count(word1, word2, sort = TRUE)
+
+#Allerførst gemmer vi den ovenstående optælling til en ny data frame, så vi kan arbejde videre med den
+
+socialisme_bigrams_filtered_aktuelt %>% 
+  filter(str_detect(word1, "\\bsocialis[a-zæø]*")) %>% 
+  count(word1, word2, sort = TRUE) -> socialisme1_bigrams_counts_aktuelt1
+
+
+#Herefter bruger vi biblioteket "igraph" til at lave vores dataframe om til et netværksgraf-element. Inden da specificerer vi, at vi kun er interesserede i bigrams, der optræder mere en 8 gange
+
+library(igraph)
+
+bigram_graph_aktuelt2 <- socialisme1_bigrams_counts_aktuelt1 %>%
+  filter(n > 8) %>%
+  graph_from_data_frame()
+
+# Tilsidst bruger vi pakken "ggraph" til at visualisere netværket:
+
+library(ggraph)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_graph_aktuelt2, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "#f7a1bd", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  labs(title = "Figur 4. Bigram illustration from socialisten, words after socialist related words") +
+  theme_void()+
+  theme(legend.position = "right")
+
+
+# Herved for vi altså på en overskuelig måde visualiseret de forskellige ords forhold. 
+# For at gemme grafen bruger vi funktionen `ggsave`, hvor man angiver filnavn og type efterfulgt af bredde og højde og hvilken enhed, samt baggrundsfarven.
+
+ggsave("graphics/bigram_graph_aktuelt2.png", width = 28, height = 20, units = "cm", bg = "white")
